@@ -10,10 +10,12 @@ keycloak_openid = KeycloakOpenID(
     client_secret_key="ODYrpgpMzjZblJRVx3cnHGof5MqbcnsR"
 )
 
-def tiene_rol(token_info, roles_permitidos):
+def tiene_rol(token_info, cliente_id, roles_permitidos):
     try:
-        roles_usuario = token_info["realm_access"]["roles"]
+        roles_usuario = token_info["resource_access"][cliente_id]["roles"]
+        
         return any(rol in roles_usuario for rol in roles_permitidos)
+        
     except KeyError:
         return False
 
@@ -44,8 +46,8 @@ def token_required(roles_permitidos):
                 })
                 return jsonify({"error": "Token inválido o expirado", "detalle": str(e)}), 401
 
-            if not tiene_rol(userinfo, roles_permitidos):
-                return jsonify({"error": f"Acceso denegado: se requiere uno de estos roles: {roles_permitidos}"}), 403
+            if not tiene_rol(userinfo, "backend-python", roles_permitidos):
+                return jsonify({"error": "Acceso denegado. Rol insuficiente."}), 403
 
             return f(userinfo, *args, **kwargs)
         return decorated
