@@ -50,13 +50,20 @@ def get_patient(userinfo, patient_id):
 def create_patient(userinfo):
     data = request.get_json()
     
+    first_name = data.get('firstName')
+    last_name = data.get('lastName')
+    
+    # VERIFICACIÓN: Evitar registrar pacientes duplicados
+    if first_name and last_name and Patient.query.filter_by(firstName=first_name, lastName=last_name).first():
+        return jsonify({"error": f"El paciente {first_name} {last_name} ya está registrado en el sistema."}), 409
+    
     room_id = data.get('RoomId')
     if room_id and not Room.query.get(room_id):
         return jsonify({"error": f"La habitación con ID '{room_id}' no existe."}), 400
     
     new_patient = Patient(
-        firstName=data.get('firstName'),
-        lastName=data.get('lastName'),
+        firstName=first_name,
+        lastName=last_name,
         roomId=room_id
     )
     if data.get('dateOfBirth'):
@@ -102,6 +109,11 @@ def create_patient(userinfo):
                 db.session.rollback() 
                 return jsonify({"error": f"El dispositivo IoT con ID '{wid}' no existe."}), 400
                 
+            # VERIFICACIÓN: Evitar asignar una manilla que ya tiene otro paciente
+            if PatientWearable.query.filter_by(wearableId=wid).first():
+                db.session.rollback()
+                return jsonify({"error": f"El dispositivo {wid} ya está asignado a otro paciente actualmente."}), 409
+                
             rel_w = PatientWearable(patientId=new_patient.patientId, wearableId=wid, assignedDate=datetime.utcnow())
             db.session.add(rel_w)
 
@@ -116,14 +128,21 @@ def update_patient(userinfo, patient_id):
     if not p: return jsonify({"status": 404, "message": "No encontrado"}), 404
     data = request.get_json()
     
+    new_first = data.get('firstName', p.firstName)
+    new_last = data.get('lastName', p.lastName)
+    
+    # VERIFICACIÓN: Evitar que al actualizar el nombre choque con otro paciente existente
+    if (new_first != p.firstName or new_last != p.lastName) and Patient.query.filter_by(firstName=new_first, lastName=new_last).first():
+        return jsonify({"error": f"Ya existe otro paciente registrado como {new_first} {new_last}."}), 409
+    
     new_room_id = data.get('RoomId')
     if new_room_id and new_room_id != p.roomId:
         if not Room.query.get(new_room_id):
             return jsonify({"error": f"La habitación con ID '{new_room_id}' no existe."}), 400
         p.roomId = new_room_id
         
-    p.firstName = data.get('firstName', p.firstName)
-    p.lastName = data.get('lastName', p.lastName)
+    p.firstName = new_first
+    p.lastName = new_last
     db.session.commit()
     return jsonify({"status": 200, "message": "Paciente actualizado", "patientId": p.patientId}), 200
 
@@ -242,7 +261,12 @@ def delete_alert(userinfo, alert_id):
 @token_required(roles_permitidos=[ROLE_ADMIN])
 def create_device(userinfo):
     data = request.get_json()
-    d = Wearable(macAddress=data.get('macAddress'), batteryLevel=data.get('batteryLevel'), isActive=data.get('isActive'))
+    mac = data.get('macAddress')
+    
+    if mac and Wearable.query.filter_by(macAddress=mac).first():
+        return jsonify({"error": f"Ya existe un dispositivo registrado con la MAC {mac}."}), 409
+
+    d = Wearable(macAddress=mac, batteryLevel=data.get('batteryLevel'), isActive=data.get('isActive'))
     db.session.add(d)
     db.session.commit()
     return jsonify({"wearableId": d.wearableId, "Message": "Dispositivo registrado exitosamente"}), 201
@@ -268,7 +292,13 @@ def update_device(userinfo, device_id):
     d = Wearable.query.get(device_id)
     if not d: return jsonify({"error": "No encontrado"}), 404
     data = request.get_json()
-    d.macAddress = data.get('macAddress', d.macAddress)
+    
+    new_mac = data.get('macAddress')
+    
+    if new_mac and new_mac != d.macAddress and Wearable.query.filter_by(macAddress=new_mac).first():
+        return jsonify({"error": f"La dirección MAC {new_mac} ya está en uso por otro dispositivo."}), 409
+
+    d.macAddress = new_mac or d.macAddress
     d.batteryLevel = data.get('batteryLevel', d.batteryLevel)
     d.isActive = data.get('isActive', d.isActive)
     db.session.commit()
@@ -292,7 +322,13 @@ def delete_device(userinfo, device_id):
 @token_required(roles_permitidos=[ROLE_ADMIN])
 def create_room(userinfo):
     data = request.get_json()
-    r = Room(floor=data.get('floor'), roomNumber=data.get('roomNumber'), roomPavilion=data.get('roomPavilion'))
+    num = data.get('roomNumber')
+    pav = data.get('roomPavilion')
+    
+    if num and pav and Room.query.filter_by(roomNumber=num, roomPavilion=pav).first():
+        return jsonify({"error": f"La habitación {num} ya existe en el pabellón {pav}."}), 409
+
+    r = Room(floor=data.get('floor'), roomNumber=num, roomPavilion=pav)
     db.session.add(r)
     db.session.commit()
     return jsonify({"roomId": r.roomId, "Message": "Habitación registrada exitosamente"}), 201
@@ -318,9 +354,16 @@ def update_room(userinfo, room_id):
     r = Room.query.get(room_id)
     if not r: return jsonify({"error": "No encontrada"}), 404
     data = request.get_json()
+    
+    new_num = data.get('roomNumber', r.roomNumber)
+    new_pav = data.get('roomPavilion', r.roomPavilion)
+    
+    if (new_num != r.roomNumber or new_pav != r.roomPavilion) and Room.query.filter_by(roomNumber=new_num, roomPavilion=new_pav).first():
+        return jsonify({"error": f"La habitación {new_num} ya existe en el pabellón {new_pav}."}), 409
+
     r.floor = data.get('floor', r.floor)
-    r.roomNumber = data.get('roomNumber', r.roomNumber)
-    r.roomPavilion = data.get('roomPavilion', r.roomPavilion)
+    r.roomNumber = new_num
+    r.roomPavilion = new_pav
     db.session.commit()
     return jsonify({"roomId": r.roomId, "Message": "Información de la habitación actualizada"}), 200
 
@@ -337,12 +380,17 @@ def delete_room(userinfo, room_id):
     db.session.commit()
     return jsonify({"roomId": r.roomId, "Message": "Habitación eliminada exitosamente"}), 200
 
-# tipos de alerta
+# alertas
 @api_blueprint.route('/alert-type', methods=['POST'])
 @token_required(roles_permitidos=[ROLE_ADMIN])
 def create_alert_type(userinfo):
     data = request.get_json()
-    at = AlertType(name=data.get('name'), code=data.get('code'), description=data.get('description'))
+    code = data.get('code')
+    
+    if code and AlertType.query.filter_by(code=code).first():
+        return jsonify({"error": f"El código de alerta '{code}' ya está en uso."}), 409
+
+    at = AlertType(name=data.get('name'), code=code, description=data.get('description'))
     db.session.add(at)
     db.session.commit()
     return jsonify({"alertTypeId": at.alertTypeId, "Message": "Tipo de alerta registrado exitosamente"}), 201
@@ -368,8 +416,14 @@ def update_alert_type(userinfo, type_id):
     t = AlertType.query.get(type_id)
     if not t: return jsonify({"error": "No encontrado"}), 404
     data = request.get_json()
+    
+    new_code = data.get('code')
+    
+    if new_code and new_code != t.code and AlertType.query.filter_by(code=new_code).first():
+        return jsonify({"error": f"El código de alerta '{new_code}' ya está en uso por otro registro."}), 409
+
     t.name = data.get('name', t.name)
-    t.code = data.get('code', t.code)
+    t.code = new_code or t.code
     t.description = data.get('description', t.description)
     db.session.commit()
     return jsonify({"alertTypeId": t.alertTypeId, "Message": "Tipo de alerta actualizada"}), 200
