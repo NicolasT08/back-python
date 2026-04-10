@@ -10,31 +10,35 @@ from app.routes import format_patient_response
 
 def test_tiene_rol_exitoso():
     token_info_simulado = {
-        "realm_access": {
-            "roles": ["default-roles-prueba", "nurse", "offline_access"]
+        "resource_access": {
+            "backend-python": {
+                "roles": ["default-roles-prueba", "nurse", "offline_access"]
+            }
         }
     }
     roles_permitidos = ["nurse", "administrator"]
     
-    resultado = tiene_rol(token_info_simulado, roles_permitidos)
+    resultado = tiene_rol(token_info_simulado, "backend-python", roles_permitidos)
     assert resultado is True
 
 def test_tiene_rol_fallido():
     token_info_simulado = {
-        "realm_access": {
-            "roles": ["guest", "offline_access"]
+        "resource_access": {
+            "backend-python": {
+                "roles": ["guest", "offline_access"]
+            }
         }
     }
     roles_permitidos = ["nurse", "administrator"]
     
-    resultado = tiene_rol(token_info_simulado, roles_permitidos)
+    resultado = tiene_rol(token_info_simulado, "backend-python", roles_permitidos)
     assert resultado is False
 
 def test_tiene_rol_diccionario_malformado():
     token_info_simulado = {"otra_llave": "datos"}
     roles_permitidos = ["administrator"]
     
-    resultado = tiene_rol(token_info_simulado, roles_permitidos)
+    resultado = tiene_rol(token_info_simulado, "backend-python", roles_permitidos)
     assert resultado is False
 
 def test_format_patient_response():
