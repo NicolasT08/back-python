@@ -43,17 +43,16 @@ def get_patients(userinfo):
 def get_patient(userinfo, patient_id):
     p = Patient.query.get(patient_id)
     if not p: return jsonify({"error": "No encontrado"}), 404
+    publicar_evento("pacientes.consultas", {"tipo": "paciente_consultado", "patientId": patient_id, "usuario": userinfo.get("preferred_username")})
     return jsonify(format_patient_response(p)), 200
 
 @api_blueprint.route('/patient', methods=['POST'])
 @token_required(roles_permitidos=[ROLE_ADMIN])
 def create_patient(userinfo):
     data = request.get_json()
-    
     first_name = data.get('firstName')
     last_name = data.get('lastName')
     
-    # VERIFICACIÓN: Evitar registrar pacientes duplicados
     if first_name and last_name and Patient.query.filter_by(firstName=first_name, lastName=last_name).first():
         return jsonify({"error": f"El paciente {first_name} {last_name} ya está registrado en el sistema."}), 409
     
@@ -61,11 +60,7 @@ def create_patient(userinfo):
     if room_id and not Room.query.get(room_id):
         return jsonify({"error": f"La habitación con ID '{room_id}' no existe."}), 400
     
-    new_patient = Patient(
-        firstName=first_name,
-        lastName=last_name,
-        roomId=room_id
-    )
+    new_patient = Patient(firstName=first_name, lastName=last_name, roomId=room_id)
     if data.get('dateOfBirth'):
         new_patient.dateOfBirth = datetime.fromisoformat(data.get('dateOfBirth').replace('Z', '+00:00'))
         
@@ -74,15 +69,9 @@ def create_patient(userinfo):
     
     ec_data = data.get('emergencyContact', {})
     if ec_data:
-        ec = EmergencyContact(
-            firstName=ec_data.get('firstName'), 
-            lastName=ec_data.get('lastName'), 
-            phone=ec_data.get('phone'), 
-            mail=ec_data.get('mail')
-        )
+        ec = EmergencyContact(firstName=ec_data.get('firstName'), lastName=ec_data.get('lastName'), phone=ec_data.get('phone'), mail=ec_data.get('mail'))
         db.session.add(ec)
         db.session.flush()
-        
         rel_contact = PatientContact(patientId=new_patient.patientId, contactId=ec.contactId, relationship=ec_data.get('relationship'))
         db.session.add(rel_contact)
 
@@ -90,7 +79,6 @@ def create_patient(userinfo):
         cond_alg = MedicalCondition(name=alg.get('name'), diagnostic=alg.get('diagnostics'), allergenType=alg.get('allergenType'))
         db.session.add(cond_alg)
         db.session.flush()
-        
         rel_cond = PatientCondition(patientId=new_patient.patientId, conditionId=cond_alg.conditionId, diagnostic=alg.get('diagnostics'))
         db.session.add(rel_cond)
 
@@ -98,7 +86,6 @@ def create_patient(userinfo):
         cond_dis = MedicalCondition(name=dis.get('name'), diagnostic=dis.get('diagnostics'), isContagious=dis.get('isContagious'), transmissionRoute=dis.get('transmissionRoute'))
         db.session.add(cond_dis)
         db.session.flush()
-        
         rel_cond2 = PatientCondition(patientId=new_patient.patientId, conditionId=cond_dis.conditionId, diagnostic=dis.get('diagnostics'))
         db.session.add(rel_cond2)
 
@@ -108,17 +95,15 @@ def create_patient(userinfo):
             if not Wearable.query.get(wid):
                 db.session.rollback() 
                 return jsonify({"error": f"El dispositivo IoT con ID '{wid}' no existe."}), 400
-                
-            # VERIFICACIÓN: Evitar asignar una manilla que ya tiene otro paciente
             if PatientWearable.query.filter_by(wearableId=wid).first():
                 db.session.rollback()
                 return jsonify({"error": f"El dispositivo {wid} ya está asignado a otro paciente actualmente."}), 409
-                
             rel_w = PatientWearable(patientId=new_patient.patientId, wearableId=wid, assignedDate=datetime.utcnow())
             db.session.add(rel_w)
 
     db.session.commit()
-    publicar_evento("pacientes.registro", {"tipo": "paciente_creado", "patientId": new_patient.patientId})
+    cache.clear()
+    publicar_evento("pacientes.registro", {"tipo": "paciente_creado", "patientId": new_patient.patientId, "usuario": userinfo.get("preferred_username")})
     return jsonify({"status": 201, "message": "Paciente creado", "patientId": new_patient.patientId}), 201
 
 @api_blueprint.route('/patient/<string:patient_id>', methods=['PUT'])
@@ -127,11 +112,9 @@ def update_patient(userinfo, patient_id):
     p = Patient.query.get(patient_id)
     if not p: return jsonify({"status": 404, "message": "No encontrado"}), 404
     data = request.get_json()
-    
     new_first = data.get('firstName', p.firstName)
     new_last = data.get('lastName', p.lastName)
     
-    # VERIFICACIÓN: Evitar que al actualizar el nombre choque con otro paciente existente
     if (new_first != p.firstName or new_last != p.lastName) and Patient.query.filter_by(firstName=new_first, lastName=new_last).first():
         return jsonify({"error": f"Ya existe otro paciente registrado como {new_first} {new_last}."}), 409
     
@@ -144,6 +127,8 @@ def update_patient(userinfo, patient_id):
     p.firstName = new_first
     p.lastName = new_last
     db.session.commit()
+    cache.clear()
+    publicar_evento("pacientes.registro", {"tipo": "paciente_actualizado", "patientId": p.patientId, "usuario": userinfo.get("preferred_username")})
     return jsonify({"status": 200, "message": "Paciente actualizado", "patientId": p.patientId}), 200
 
 @api_blueprint.route('/patient/<string:patient_id>', methods=['DELETE'])
@@ -157,11 +142,12 @@ def delete_patient(userinfo, patient_id):
 
     db.session.delete(p)
     db.session.commit()
+    cache.clear()
+    publicar_evento("pacientes.registro", {"tipo": "paciente_eliminado", "patientId": patient_id, "usuario": userinfo.get("preferred_username")})
     return jsonify({"status": 200, "message": "Paciente eliminado", "patientId": p.patientId}), 200
 
 def format_patient_response(p):
     room_data = {"idRoom": p.room_rel.roomId, "floor": p.room_rel.floor, "roomNumber": p.room_rel.roomNumber, "roomPavilion": p.room_rel.roomPavilion} if p.room_rel else {}
-    
     ec_data = {}
     if p.patient_contacts:
         pc = p.patient_contacts[0]
@@ -199,7 +185,6 @@ def format_patient_response(p):
 @token_required(roles_permitidos=[ROLE_NURSE, ROLE_ADMIN])
 def create_alert(userinfo):
     data = request.get_json()
-    
     patient_id = data.get('patientId')
     if patient_id and not Patient.query.get(patient_id):
         return jsonify({"error": f"El paciente con ID '{patient_id}' no existe."}), 400
@@ -215,7 +200,8 @@ def create_alert(userinfo):
     new_alert = Alert(patientId=patient_id, wearableId=wearable_id, alertType=alert_type_id, alertLevel=data.get('alertLevel'), alertStatus=data.get('alertStatus'))
     db.session.add(new_alert)
     db.session.commit()
-    publicar_evento("alertas.emergencias", {"tipo": "alerta_generada", "alertId": new_alert.alertId})
+    cache.clear()
+    publicar_evento("alertas.emergencias", {"tipo": "alerta_generada", "alertId": new_alert.alertId, "usuario": userinfo.get("preferred_username")})
     return jsonify({"alert_id": new_alert.alertId, "createdAt": new_alert.createdAt.isoformat(), "Message": "Alerta registrada"}), 201
 
 @api_blueprint.route('/alert', methods=['GET'])
@@ -224,6 +210,7 @@ def create_alert(userinfo):
 def get_alerts(userinfo):
     alerts = Alert.query.all()
     res = [{"alertId": a.alertId, "patientId": a.patientId, "wearableId": a.wearableId, "alertStatus": a.alertStatus, "alertLevel": a.alertLevel, "alertType": a.alertType, "nurseId": a.nurseId, "createdAt": a.createdAt.isoformat(), "resolvedAt": a.resolvedAt.isoformat() if a.resolvedAt else None} for a in alerts]
+    publicar_evento("alertas.consultas", {"tipo": "lista_consultada", "usuario": userinfo.get("preferred_username")})
     return jsonify(res), 200
 
 @api_blueprint.route('/alert/<string:alert_id>', methods=['GET'])
@@ -232,6 +219,7 @@ def get_alerts(userinfo):
 def get_alert(userinfo, alert_id):
     a = Alert.query.get(alert_id)
     if not a: return jsonify({"error": "No encontrada"}), 404
+    publicar_evento("alertas.consultas", {"tipo": "alerta_consultada", "alertId": alert_id, "usuario": userinfo.get("preferred_username")})
     return jsonify({"alertId": a.alertId, "patientId": a.patientId, "wearableId": a.wearableId, "alertStatus": a.alertStatus, "alertLevel": a.alertLevel, "alertType": a.alertType, "nurseId": a.nurseId, "createdAt": a.createdAt.isoformat(), "resolvedAt": a.resolvedAt.isoformat() if a.resolvedAt else None}), 200
 
 @api_blueprint.route('/alert/<string:alert_id>', methods=['PUT'])
@@ -245,6 +233,8 @@ def update_alert(userinfo, alert_id):
     a.nurseId = data.get('nurseId', a.nurseId)
     if data.get('resolvedAt'): a.resolvedAt = datetime.fromisoformat(data.get('resolvedAt'))
     db.session.commit()
+    cache.clear()
+    publicar_evento("alertas.emergencias", {"tipo": "alerta_actualizada", "alertId": a.alertId, "usuario": userinfo.get("preferred_username")})
     return jsonify({"alertId": a.alertId, "Message": "Alerta actualizada"}), 200
 
 @api_blueprint.route('/alert/<string:alert_id>', methods=['DELETE'])
@@ -254,6 +244,8 @@ def delete_alert(userinfo, alert_id):
     if not a: return jsonify({"error": "No encontrada"}), 404
     db.session.delete(a)
     db.session.commit()
+    cache.clear()
+    publicar_evento("alertas.emergencias", {"tipo": "alerta_eliminada", "alertId": alert_id, "usuario": userinfo.get("preferred_username")})
     return jsonify({"alertId": a.alertId, "Message": "Alerta eliminada"}), 200
 
 # dispositivos iot
@@ -262,13 +254,14 @@ def delete_alert(userinfo, alert_id):
 def create_device(userinfo):
     data = request.get_json()
     mac = data.get('macAddress')
-    
     if mac and Wearable.query.filter_by(macAddress=mac).first():
         return jsonify({"error": f"Ya existe un dispositivo registrado con la MAC {mac}."}), 409
 
     d = Wearable(macAddress=mac, batteryLevel=data.get('batteryLevel'), isActive=data.get('isActive'))
     db.session.add(d)
     db.session.commit()
+    cache.clear()
+    publicar_evento("infraestructura.dispositivos", {"tipo": "dispositivo_creado", "wearableId": d.wearableId, "usuario": userinfo.get("preferred_username")})
     return jsonify({"wearableId": d.wearableId, "Message": "Dispositivo registrado exitosamente"}), 201
 
 @api_blueprint.route('/device', methods=['GET'])
@@ -276,6 +269,7 @@ def create_device(userinfo):
 @cache.cached(timeout=60, query_string=True)
 def get_devices(userinfo):
     devices = Wearable.query.all()
+    publicar_evento("infraestructura.dispositivos", {"tipo": "lista_consultada", "usuario": userinfo.get("preferred_username")})
     return jsonify([{"wearableId": d.wearableId, "macAddress": d.macAddress, "batteryLevel": d.batteryLevel, "isActive": d.isActive} for d in devices]), 200
 
 @api_blueprint.route('/device/<string:device_id>', methods=['GET'])
@@ -284,6 +278,7 @@ def get_devices(userinfo):
 def get_device(userinfo, device_id):
     d = Wearable.query.get(device_id)
     if not d: return jsonify({"error": "No encontrado"}), 404
+    publicar_evento("infraestructura.dispositivos", {"tipo": "dispositivo_consultado", "wearableId": device_id, "usuario": userinfo.get("preferred_username")})
     return jsonify({"wearableId": d.wearableId, "macAddress": d.macAddress, "batteryLevel": d.batteryLevel, "isActive": d.isActive}), 200
 
 @api_blueprint.route('/device/<string:device_id>', methods=['PUT'])
@@ -292,7 +287,6 @@ def update_device(userinfo, device_id):
     d = Wearable.query.get(device_id)
     if not d: return jsonify({"error": "No encontrado"}), 404
     data = request.get_json()
-    
     new_mac = data.get('macAddress')
     
     if new_mac and new_mac != d.macAddress and Wearable.query.filter_by(macAddress=new_mac).first():
@@ -302,6 +296,8 @@ def update_device(userinfo, device_id):
     d.batteryLevel = data.get('batteryLevel', d.batteryLevel)
     d.isActive = data.get('isActive', d.isActive)
     db.session.commit()
+    cache.clear()
+    publicar_evento("infraestructura.dispositivos", {"tipo": "dispositivo_actualizado", "wearableId": d.wearableId, "usuario": userinfo.get("preferred_username")})
     return jsonify({"wearableId": d.wearableId, "Message": "Información del dispositivo actualizada"}), 200
 
 @api_blueprint.route('/device/<string:device_id>', methods=['DELETE'])
@@ -315,6 +311,8 @@ def delete_device(userinfo, device_id):
 
     db.session.delete(d)
     db.session.commit()
+    cache.clear()
+    publicar_evento("infraestructura.dispositivos", {"tipo": "dispositivo_eliminado", "wearableId": device_id, "usuario": userinfo.get("preferred_username")})
     return jsonify({"wearableId": d.wearableId, "Message": "Dispositivo eliminado exitosamente"}), 200
 
 # habitaciones
@@ -324,13 +322,14 @@ def create_room(userinfo):
     data = request.get_json()
     num = data.get('roomNumber')
     pav = data.get('roomPavilion')
-    
     if num and pav and Room.query.filter_by(roomNumber=num, roomPavilion=pav).first():
         return jsonify({"error": f"La habitación {num} ya existe en el pabellón {pav}."}), 409
 
     r = Room(floor=data.get('floor'), roomNumber=num, roomPavilion=pav)
     db.session.add(r)
     db.session.commit()
+    cache.clear()
+    publicar_evento("infraestructura.habitaciones", {"tipo": "habitacion_creada", "roomId": r.roomId, "usuario": userinfo.get("preferred_username")})
     return jsonify({"roomId": r.roomId, "Message": "Habitación registrada exitosamente"}), 201
 
 @api_blueprint.route('/room', methods=['GET'])
@@ -338,6 +337,7 @@ def create_room(userinfo):
 @cache.cached(timeout=60, query_string=True)
 def get_rooms(userinfo):
     rooms = Room.query.all()
+    publicar_evento("infraestructura.habitaciones", {"tipo": "lista_consultada", "usuario": userinfo.get("preferred_username")})
     return jsonify([{"roomId": r.roomId, "floor": r.floor, "roomNumber": r.roomNumber, "roomPavilion": r.roomPavilion} for r in rooms]), 200
 
 @api_blueprint.route('/room/<string:room_id>', methods=['GET'])
@@ -346,6 +346,7 @@ def get_rooms(userinfo):
 def get_room(userinfo, room_id):
     r = Room.query.get(room_id)
     if not r: return jsonify({"error": "No encontrada"}), 404
+    publicar_evento("infraestructura.habitaciones", {"tipo": "habitacion_consultada", "roomId": room_id, "usuario": userinfo.get("preferred_username")})
     return jsonify({"roomId": r.roomId, "floor": r.floor, "roomNumber": r.roomNumber, "roomPavilion": r.roomPavilion}), 200
 
 @api_blueprint.route('/room/<string:room_id>', methods=['PUT'])
@@ -354,7 +355,6 @@ def update_room(userinfo, room_id):
     r = Room.query.get(room_id)
     if not r: return jsonify({"error": "No encontrada"}), 404
     data = request.get_json()
-    
     new_num = data.get('roomNumber', r.roomNumber)
     new_pav = data.get('roomPavilion', r.roomPavilion)
     
@@ -365,6 +365,8 @@ def update_room(userinfo, room_id):
     r.roomNumber = new_num
     r.roomPavilion = new_pav
     db.session.commit()
+    cache.clear()
+    publicar_evento("infraestructura.habitaciones", {"tipo": "habitacion_actualizada", "roomId": r.roomId, "usuario": userinfo.get("preferred_username")})
     return jsonify({"roomId": r.roomId, "Message": "Información de la habitación actualizada"}), 200
 
 @api_blueprint.route('/room/<string:room_id>', methods=['DELETE'])
@@ -378,6 +380,8 @@ def delete_room(userinfo, room_id):
 
     db.session.delete(r)
     db.session.commit()
+    cache.clear()
+    publicar_evento("infraestructura.habitaciones", {"tipo": "habitacion_eliminada", "roomId": room_id, "usuario": userinfo.get("preferred_username")})
     return jsonify({"roomId": r.roomId, "Message": "Habitación eliminada exitosamente"}), 200
 
 # alertas
@@ -386,13 +390,14 @@ def delete_room(userinfo, room_id):
 def create_alert_type(userinfo):
     data = request.get_json()
     code = data.get('code')
-    
     if code and AlertType.query.filter_by(code=code).first():
         return jsonify({"error": f"El código de alerta '{code}' ya está en uso."}), 409
 
     at = AlertType(name=data.get('name'), code=code, description=data.get('description'))
     db.session.add(at)
     db.session.commit()
+    cache.clear()
+    publicar_evento("configuracion.tipos_alerta", {"tipo": "tipo_alerta_creado", "alertTypeId": at.alertTypeId, "usuario": userinfo.get("preferred_username")})
     return jsonify({"alertTypeId": at.alertTypeId, "Message": "Tipo de alerta registrado exitosamente"}), 201
 
 @api_blueprint.route('/alert-type', methods=['GET'])
@@ -400,6 +405,7 @@ def create_alert_type(userinfo):
 @cache.cached(timeout=60, query_string=True) 
 def get_alert_types(userinfo):
     types = AlertType.query.all()
+    publicar_evento("configuracion.tipos_alerta", {"tipo": "lista_consultada", "usuario": userinfo.get("preferred_username")})
     return jsonify([{"alertTypeId": t.alertTypeId, "name": t.name, "code": t.code, "description": t.description} for t in types]), 200
 
 @api_blueprint.route('/alert-type/<string:type_id>', methods=['GET'])
@@ -408,6 +414,7 @@ def get_alert_types(userinfo):
 def get_alert_type(userinfo, type_id):
     t = AlertType.query.get(type_id)
     if not t: return jsonify({"error": "No encontrado"}), 404
+    publicar_evento("configuracion.tipos_alerta", {"tipo": "tipo_alerta_consultado", "alertTypeId": type_id, "usuario": userinfo.get("preferred_username")})
     return jsonify({"alertTypeId": t.alertTypeId, "name": t.name, "code": t.code, "description": t.description}), 200
 
 @api_blueprint.route('/alert-type/<string:type_id>', methods=['PUT'])
@@ -416,7 +423,6 @@ def update_alert_type(userinfo, type_id):
     t = AlertType.query.get(type_id)
     if not t: return jsonify({"error": "No encontrado"}), 404
     data = request.get_json()
-    
     new_code = data.get('code')
     
     if new_code and new_code != t.code and AlertType.query.filter_by(code=new_code).first():
@@ -426,6 +432,8 @@ def update_alert_type(userinfo, type_id):
     t.code = new_code or t.code
     t.description = data.get('description', t.description)
     db.session.commit()
+    cache.clear()
+    publicar_evento("configuracion.tipos_alerta", {"tipo": "tipo_alerta_actualizado", "alertTypeId": t.alertTypeId, "usuario": userinfo.get("preferred_username")})
     return jsonify({"alertTypeId": t.alertTypeId, "Message": "Tipo de alerta actualizada"}), 200
 
 @api_blueprint.route('/alert-type/<string:type_id>', methods=['DELETE'])
@@ -439,4 +447,6 @@ def delete_alert_type(userinfo, type_id):
 
     db.session.delete(t)
     db.session.commit()
+    cache.clear()
+    publicar_evento("configuracion.tipos_alerta", {"tipo": "tipo_alerta_eliminado", "alertTypeId": type_id, "usuario": userinfo.get("preferred_username")})
     return jsonify({"alertTypeId": t.alertTypeId, "Message": "Tipo de alerta eliminada exitosamente"}), 200
