@@ -33,7 +33,8 @@ def token_required(roles_permitidos):
                 opciones = {
                     "verify_signature": True, 
                     "verify_aud": False, 
-                    "verify_exp": True
+                    "verify_exp": True,
+                    "verify_iss": False
                 }
                 userinfo = keycloak_openid.decode_token(token, key=llave_publica, options=opciones)
             except Exception as e:
